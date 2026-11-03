@@ -44,7 +44,7 @@ def measure_path(rid):
 def load(rid):
     ck = torch.load(os.path.join(CKPT_DIR, rid + '.pt'), map_location=device)
     c = ck['config']
-    model = GPTLanguageModel(c['n_layer'], c['n_head'], c['n_embd'], c['block_size'], 0.0).to(device)
+    model = GPTLanguageModel(c['n_layer'], c['n_head'], c['n_embd'], c['block_size'], 0.0, c.get('ffn', True)).to(device)
     model.load_state_dict(ck['state_dict'])
     model.eval()
     return model, c

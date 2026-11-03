@@ -38,6 +38,9 @@ GRID = dict(
 
 # fixed training recipe, shared by every run so results are comparable
 DROPOUT_STUDY = dict(dropout=[0.1, 0.2], where=dict(n_embd=128, block_size=128))
+# ablation: the same blocks with the feedforward sublayer removed, on a depth x width slice.
+# a no-ffn block has 4C^2 weights vs 12C^2, so no-ffn n_layer 6 is parameter-matched to ffn n_layer 2
+FFN_STUDY = dict(where=dict(n_head=[2], block_size=[32, 128]))
 
 RECIPE = dict(
     batch_size=32,
@@ -129,28 +132,32 @@ class FeedFoward(nn.Module):
 class Block(nn.Module):
     """ Transformer block: communication followed by computation """
 
-    def __init__(self, n_embd, n_head, block_size, dropout):
+    def __init__(self, n_embd, n_head, block_size, dropout, ffn=True):
         super().__init__()
         head_size = n_embd // n_head
         self.sa = MultiHeadAttention(n_embd, n_head, head_size, block_size, dropout)
-        self.ffwd = FeedFoward(n_embd, dropout)
         self.ln1 = nn.LayerNorm(n_embd)
-        self.ln2 = nn.LayerNorm(n_embd)
+        # ablation: ffn=False drops the whole second sublayer (ln2, feedforward, its residual add)
+        self.ffn = ffn
+        if ffn:
+            self.ffwd = FeedFoward(n_embd, dropout)
+            self.ln2 = nn.LayerNorm(n_embd)
 
     def forward(self, x):
         x = x + self.sa(self.ln1(x))
-        x = x + self.ffwd(self.ln2(x))
+        if self.ffn:
+            x = x + self.ffwd(self.ln2(x))
         return x
 
 
 class GPTLanguageModel(nn.Module):
 
-    def __init__(self, n_layer, n_head, n_embd, block_size, dropout):
+    def __init__(self, n_layer, n_head, n_embd, block_size, dropout, ffn=True):
         super().__init__()
         self.block_size = block_size
         self.token_embedding_table = nn.Embedding(vocab_size, n_embd)
         self.position_embedding_table = nn.Embedding(block_size, n_embd)
-        self.blocks = nn.Sequential(*[Block(n_embd, n_head, block_size, dropout) for _ in range(n_layer)])
+        self.blocks = nn.Sequential(*[Block(n_embd, n_head, block_size, dropout, ffn) for _ in range(n_layer)])
         self.ln_f = nn.LayerNorm(n_embd)
         self.lm_head = nn.Linear(n_embd, vocab_size)
         self.apply(self._init_weights)
@@ -188,7 +195,7 @@ def sync():
 def run_id(cfg):
     rid = f"L{cfg['n_layer']}_H{cfg['n_head']}_E{cfg['n_embd']}_T{cfg['block_size']}"
     d = cfg.get('dropout', 0.0)
-    return rid + (f"_D{round(d * 100):02d}" if d else '')
+    return rid + (f"_D{round(d * 100):02d}" if d else '') + ('' if cfg.get('ffn', True) else '_NOFFN')
 
 
 def train(cfg, max_iters=None, quiet=False):
@@ -206,7 +213,8 @@ def train(cfg, max_iters=None, quiet=False):
         return x.to(device), y.to(device)
 
     dropout = cfg.get('dropout', r['dropout'])
-    model = GPTLanguageModel(cfg['n_layer'], cfg['n_head'], cfg['n_embd'], block_size, dropout).to(device)
+    model = GPTLanguageModel(cfg['n_layer'], cfg['n_head'], cfg['n_embd'], block_size, dropout,
+                             cfg.get('ffn', True)).to(device)
     n_params = sum(p.numel() for p in model.parameters())
 
     @torch.no_grad()
@@ -275,6 +283,9 @@ def study_configs():
         if all(cfg[k] == v for k, v in DROPOUT_STUDY['where'].items()):
             for d in DROPOUT_STUDY['dropout']:
                 yield dict(cfg, dropout=d)
+    for cfg in grid_configs():
+        if all(cfg[k] in v for k, v in FFN_STUDY['where'].items()):
+            yield dict(cfg, ffn=False)
 
 
 def all_configs():
@@ -297,6 +308,7 @@ def aggregate():
         with open(mp) as f:
             m = json.load(f)
         run['config'].setdefault('dropout', RECIPE['dropout'])
+        run['config'].setdefault('ffn', True)
         run['speed'] = dict(train_tok_s=run['train_tok_s'], **m['speed'])
         del run['train_tok_s']
         runs[rid] = run
@@ -305,6 +317,7 @@ def aggregate():
     meta = dict(
         grid=GRID,
         dropout_study=DROPOUT_STUDY,
+        ffn_study=FFN_STUDY,
         recipe=RECIPE,
         measure=measure.SETTINGS,
         dataset=dict(name='tinyshakespeare', chars=len(text), vocab_size=vocab_size,

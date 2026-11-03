@@ -6,6 +6,8 @@ machine reassembles itself. Run an experiment and the machine replays the record
 run, ingests a held-out prompt, then generates text token by token from the recorded trace —
 slowed down to watch, or at the latency that was actually measured (`R` toggles).
 
+![Generating: input enters bottom-left, output leaves on the brass belt top-right](docs/generate.png)
+
 ```
 lab/
   train/sweep.py   trains every config on the dial grid, saves train/ckpt/<id>.pt, then measures it
@@ -35,10 +37,17 @@ tinyshakespeare with the same 90/10 split as `gpt.py`. The architecture is `gpt.
 
 **Dropout study.** Dropout is 0 across the grid (`gpt.py` uses 0.2). The largest corner
 (`n_embd` 128, `block_size` 128) starts to overfit, so its 12 configs are also trained at
-dropout 0.1 and 0.2, everything else identical — 24 extra runs, 168 in total, ids suffixed
+dropout 0.1 and 0.2, everything else identical — 24 extra runs, ids suffixed
 `_D10` / `_D20`. The console's fifth row selects them; it is fixed at 0 elsewhere. During the
 training replay the machine blinks that fraction of attention / feedforward cells dark;
 generation always runs with dropout off (eval mode), as in `gpt.py`.
+
+**Feedforward ablation.** 24 more runs remove each block's feedforward sublayer (the
+network, `ln2` and its residual add), leaving attention-only blocks: every `n_layer` ×
+`n_embd` at `n_head` 2 and `block_size` 32 and 128, ids suffixed `_NOFFN`. A no-ffn block
+has 4·C² weights against 12·C², so a no-ffn 6-layer model is parameter-matched to a
+full 2-layer one. The console's sixth row switches it; the machine sheds its feedforward
+modules, `ln2` rings and second conduits.
 
 ## What is real
 

@@ -5,7 +5,7 @@ import { resetGroups } from './draw3d'
 import { drawRoom, drawRoomShell, FOREGROUND, CRT } from './room'
 import { Scene } from './scene'
 import { layoutFor, Box } from './layout'
-import { Config, Param, PARAMS, Run, RunsFile, loadRuns, loadDetail, runId, dropoutOptions } from './data'
+import { Config, Param, PARAMS, Run, RunsFile, loadRuns, loadDetail, runId, dropoutOptions, ffnOptions } from './data'
 import { describe } from './info'
 import { drawControl, drawInfo, drawTooltip, drawHint, drawPrintout, drawNotebook, CONTROL, NOTEBOOK_W } from './ui'
 import { Experiment, advance, machineState, phaseOf } from './experiment'
@@ -49,12 +49,14 @@ const S = {
 
 const grid = () => S.data?.meta.grid ?? FALLBACK_GRID
 const total = () => {
-  // the full grid, plus the dropout variants of the study corner
-  const g = grid(), st = S.data?.meta.dropout_study
-  const all = PARAMS.reduce((a, p) => a * g[p].length, 1)
-  if (!st) return all
-  const corner = PARAMS.reduce((a, p) => a * (p in st.where ? 1 : g[p].length), 1)
-  return all + corner * st.dropout.length
+  // the full grid, plus the dropout variants of the study corner and the no-ffn ablation slice
+  const g = grid(), meta = S.data?.meta
+  let n = PARAMS.reduce((a, p) => a * g[p].length, 1)
+  const ds = meta?.dropout_study
+  if (ds) n += PARAMS.reduce((a, p) => a * (p in ds.where ? 1 : g[p].length), 1) * ds.dropout.length
+  const fs = meta?.ffn_study
+  if (fs) n += PARAMS.reduce((a, p) => a * (fs.where[p]?.length ?? g[p].length), 1)
+  return n
 }
 const runFor = (c: Config) => S.data?.runs[runId(c)]
 const now = () => performance.now() / 1000
@@ -69,9 +71,11 @@ function setConfig(c: Config) {
   const prev = S.cfg
   // dropout only exists where variants were recorded
   if (!dropoutOptions(c, S.data?.meta).includes(c.dropout ?? 0)) c = { ...c, dropout: 0 }
+  // so does the feedforward ablation
+  if (!ffnOptions(c, S.data?.meta).includes(c.ffn !== false)) c = { ...c, ffn: true }
   S.cfg = c
   // dropout changes the training, not the architecture: the machine stays put
-  if (PARAMS.some(p => prev[p] !== c[p])) scene.setLayout(layoutFor(c, prev), now())
+  if (PARAMS.some(p => prev[p] !== c[p]) || (prev.ffn !== false) !== (c.ffn !== false)) scene.setLayout(layoutFor(c, prev), now())
   // a different architecture is a different (untrained) machine; stop any generation in progress
   if (S.exp) S.exp.stopped = true
   if (S.selected && !scene.layout.parts.some(p => p.comp === S.selected) && S.selected !== 'terminal') S.selected = null
@@ -83,6 +87,11 @@ function step(p: Param, dir: number) {
   const i = vals.indexOf(S.cfg[p]) + dir
   if (i < 0 || i >= vals.length) return
   setConfig({ ...S.cfg, [p]: vals[i] })
+}
+
+function toggleFfn() {
+  if (locked() || !ffnOptions(S.cfg, S.data?.meta).includes(false)) return
+  setConfig({ ...S.cfg, ffn: S.cfg.ffn === false })
 }
 
 function stepDropout(dir: number) {
@@ -266,6 +275,7 @@ function frame() {
     cfg: S.cfg, row: S.row, grid: grid(), run: runFor(S.cfg), nRuns: S.data?.meta.n_runs ?? 0, totalRuns: total(),
     locked: locked() || S.loading, realtime: S.realtime,
     dropouts: dropoutOptions(S.cfg, S.data?.meta), stepDropout,
+    ffnSwitchable: ffnOptions(S.cfg, S.data?.meta).includes(false), toggleFfn,
     step, setRow: i => { S.row = i }, runExperiment, toggleSpeed, toggleScale,
   }, t)
   if (S.loadError) drawHint(fb, S.loadError, fb.h - CONTROL.h - 20)
@@ -295,8 +305,8 @@ canvas.addEventListener('mousedown', ev => {
 
 window.addEventListener('keydown', ev => {
   const k = ev.key
-  const rows = PARAMS.length + 1 // the four architecture dials + dropout
-  const dial = (dir: number) => (S.row < PARAMS.length ? step(PARAMS[S.row], dir) : stepDropout(dir))
+  const rows = PARAMS.length + 2 // the four architecture dials + dropout + ffn
+  const dial = (dir: number) => (S.row < PARAMS.length ? step(PARAMS[S.row], dir) : S.row === PARAMS.length ? stepDropout(dir) : toggleFfn())
   if (k === 'ArrowUp' || k === 'w') S.row = (S.row + rows - 1) % rows
   else if (k === 'ArrowDown' || k === 's') S.row = (S.row + 1) % rows
   else if (k === 'ArrowLeft' || k === 'a') dial(-1)
@@ -305,7 +315,7 @@ window.addEventListener('keydown', ev => {
   else if (k === 'Escape') { S.selected = null; S.scaleOpen = false }
   else if (k === 'g' || k === 'G') toggleScale()
   else if (k === 'r' || k === 'R') toggleSpeed()
-  else if (k >= '1' && k <= '5') S.row = Number(k) - 1
+  else if (k >= '1' && k <= '6') S.row = Number(k) - 1
   else return
   ev.preventDefault()
 })

@@ -40,6 +40,8 @@ export interface Layout {
 
 export const HOVER = 40
 export const BLOCK_H = 66
+/** an attention-only block (feedforward ablated) is just ln1 + heads + projection */
+const BLOCK_H_NOFFN = 40
 const SLOT = 7 // cartridge pitch along the conveyor
 const LANE = 8 // conveyor lane pitch
 const PER_LANE = 16
@@ -81,13 +83,15 @@ export function layoutFor(c: Config, prev?: Config): Layout {
   add({ key: 'pos', kind: 'pos', comp: 'pos', box: { x: x0 - 2, y: y0 - 2, z: z0 + 17, w: W + 4, d: D + 4, h: 9 } })
 
   // ---- transformer blocks ----
+  const ffn = c.ffn !== false
+  const bh = ffn ? BLOCK_H : BLOCK_H_NOFFN
   const blockZ: number[] = []
   const prevHeads = prev?.n_head ?? c.n_head
   for (let l = 0; l < c.n_layer; l++) {
-    const zb = z0 + 30 + l * BLOCK_H
+    const zb = z0 + 30 + l * bh
     blockZ.push(zb)
     const dl = 0.08 * l
-    const spawnAbove = l > 0 ? `b${l - 1}.ffn` : 'pos'
+    const spawnAbove = l > 0 ? (ffn ? `b${l - 1}.ffn` : `b${l - 1}.proj`) : 'pos'
     add({ key: `b${l}.ln1`, kind: 'ln', comp: `b${l}.ln1`, layer: l, delay: dl, spawnFrom: spawnAbove, box: { x: x0 - 4, y: y0 - 4, z: zb, w: W + 8, d: D + 8, h: 3 } })
 
     const gap = 4
@@ -101,8 +105,8 @@ export function layoutFor(c: Config, prev?: Config): Layout {
       })
     }
     add({ key: `b${l}.proj`, kind: 'proj', comp: `b${l}.proj`, layer: l, delay: dl + 0.1, spawnFrom: spawnAbove, box: { x: x0 + 2, y: y0 + 2, z: zb + 27, w: W - 4, d: D - 4, h: 4 } })
-    add({ key: `b${l}.ln2`, kind: 'ln', comp: `b${l}.ln2`, layer: l, delay: dl + 0.12, spawnFrom: spawnAbove, box: { x: x0 - 4, y: y0 - 4, z: zb + 33, w: W + 8, d: D + 8, h: 3 } })
-    add({ key: `b${l}.ffn`, kind: 'ffn', comp: `b${l}.ffn`, layer: l, delay: dl + 0.15, spawnFrom: spawnAbove, box: { x: x0 - 5, y: y0 - 3, z: zb + 38, w: W + 10, d: D + 6, h: 26 } })
+    if (ffn) add({ key: `b${l}.ln2`, kind: 'ln', comp: `b${l}.ln2`, layer: l, delay: dl + 0.12, spawnFrom: spawnAbove, box: { x: x0 - 4, y: y0 - 4, z: zb + 33, w: W + 8, d: D + 8, h: 3 } })
+    if (ffn) add({ key: `b${l}.ffn`, kind: 'ffn', comp: `b${l}.ffn`, layer: l, delay: dl + 0.15, spawnFrom: spawnAbove, box: { x: x0 - 5, y: y0 - 3, z: zb + 38, w: W + 10, d: D + 6, h: 26 } })
 
     // residual 1 bypasses ln1 + attention on the +x face
     const r1x = x0 + W + 8, r1y = y0 + D * 0.3
@@ -113,6 +117,7 @@ export function layoutFor(c: Config, prev?: Config): Layout {
     add({ key: `${res1}.in`, kind: 'adder', comp: res1, layer: l, delay: dl + 0.24, box: { x: x0 + W - 2, y: r1y - 1, z: r1z1 - 1, w: 14, d: 6, h: 6 } })
 
     // residual 2 bypasses ln2 + feedforward on the +y face (outside the bulkier ffn)
+    if (!ffn) continue
     const r2y = y0 + D + 8, r2x = x0 + W * 0.25
     const r2z0 = zb + 31, r2z1 = zb + BLOCK_H - 1
     const res2 = `b${l}.res2`
@@ -122,7 +127,7 @@ export function layoutFor(c: Config, prev?: Config): Layout {
   }
 
   // ---- final layer norm + output projection ----
-  const zt = z0 + 30 + c.n_layer * BLOCK_H + 2
+  const zt = z0 + 30 + c.n_layer * bh + 2
   add({ key: 'lnf', kind: 'ln', comp: 'lnf', box: { x: x0 - 5, y: y0 - 5, z: zt, w: W + 10, d: D + 10, h: 3 } })
   add({ key: 'lm', kind: 'lm', comp: 'lm', box: { x: x0, y: y0, z: zt + 5, w: W, d: D, h: 12 } })
   const COLS = 13, ROWS = 5

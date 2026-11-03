@@ -37,6 +37,9 @@ export interface ControlState {
   /** dropout rates that were recorded for the dialled architecture */
   dropouts: number[]
   stepDropout(dir: number): void
+  /** whether the feedforward-ablated variant exists for the dialled architecture */
+  ffnSwitchable: boolean
+  toggleFfn(): void
   /** dials and RUN are locked while the training replay / ingest is playing */
   locked: boolean
   realtime: boolean
@@ -47,7 +50,7 @@ export interface ControlState {
   toggleScale(): void
 }
 
-export const CONTROL = { w: 196, h: 136 }
+export const CONTROL = { w: 196, h: 148 }
 
 export function drawControl(fb: FB, picker: Picker, s: ControlState, t: number) {
   const w = CONTROL.w, h = CONTROL.h
@@ -114,7 +117,20 @@ export function drawControl(fb: FB, picker: Picker, s: ControlState, t: number) 
       else fb.rect(dx + 1, rowY + 3, 1, 1, P.green)
     }
   }
-  ty += (PARAMS.length + 1) * 12 + 3
+  {
+    // sixth row: the feedforward ablation switch
+    const i = PARAMS.length + 1, rowY = ty + i * 12, active = s.row === i
+    const on = s.cfg.ffn !== false
+    fb.rect(sx + 2, rowY - 2, sw - 4, 11, active ? P.pine : mix(P.moss, P.ink, 0.6), picker.ui(() => s.setRow(i)))
+    fb.text(sx + 5, rowY, (active ? '>' : ' ') + 'ffn', s.ffnSwitchable ? (active ? P.white : P.lime) : P.green)
+    const bx = sx + 86
+    button(fb, picker, bx, rowY - 1, 9, 9, '◄', s.ffnSwitchable && on, () => s.toggleFfn(), P.lime, 'remove the feedforward sublayer')
+    const v = on ? 'ON' : 'OFF'
+    fb.text(bx + 12 + (18 - v.length * CHAR_W) / 2 + 3, rowY, v, s.ffnSwitchable ? (on ? P.white : P.amber) : P.steel)
+    button(fb, picker, bx + 36, rowY - 1, 9, 9, '►', s.ffnSwitchable && !on, () => s.toggleFfn(), P.lime,
+      s.ffnSwitchable ? 'restore the feedforward sublayer' : 'ffn ablation: n_head 2, block_size 32 or 128')
+  }
+  ty += (PARAMS.length + 2) * 12 + 3
   fb.rect(sx + 3, ty - 2, sw - 6, 1, P.pine)
   const params = paramCounts(s.cfg).total
   fb.text(sx + 5, ty + 1, 'PARAMS', P.green)
@@ -257,6 +273,7 @@ export function drawPrintout(fb: FB, picker: Picker, e: Experiment, now: number,
     }
     const dr = run.config.dropout ?? 0
     line(`DROPOUT ${dr ? dr.toFixed(1) : '0 (OFF)'}  LR ${meta.recipe.learning_rate}`, dr ? P.wine : soft)
+    if (run.config.ffn === false) line('ABLATION: NO FEEDFORWARD', P.wine)
     line(`${meta.recipe.max_iters} STEPS IN ${run.train_seconds.toFixed(1)} S`)
     line(`${fmtK(sp.train_tok_s)} TOK/S  (BATCH ${meta.recipe.batch_size}x${run.config.block_size})`)
     gap()
@@ -333,7 +350,7 @@ export function drawNotebook(fb: FB, picker: Picker, history: Run[], current: st
   button(fb, picker, x + W - 12, y + 2, 10, 10, '×', true, close, P.lemon, 'close')
 
   let ty = y + 17
-  fb.text(x + 5, ty, '#  L H   E   T DR   VAL GEN/S', P.steel)
+  fb.text(x + 5, ty, '#  L H   E   T DR F   VAL GEN/S', P.steel)
   ty += 11
   rows.forEach((run, i) => {
     const cur = run.id === current
@@ -343,7 +360,8 @@ export function drawNotebook(fb: FB, picker: Picker, history: Run[], current: st
     const val = cur && busy ? ' ... ' : run.final_val_loss.toFixed(3)
     const col = cur ? (busy && (now * 4) % 2 < 1 ? P.amber : P.lemon) : P.mist
     const dr = c.dropout ? `.${Math.round(c.dropout * 10)}` : ' 0'
-    fb.text(x + 5, ty, `${String(i + 1).padEnd(2)} ${c.n_layer} ${c.n_head} ${String(c.n_embd).padStart(3)} ${String(c.block_size).padStart(3)} ${dr} ${val} ${fmtK(run.speed.gen_tok_s).padStart(4)}`, col)
+    const ff = c.ffn === false ? '-' : 'y'
+    fb.text(x + 5, ty, `${String(i + 1).padEnd(2)} ${c.n_layer} ${c.n_head} ${String(c.n_embd).padStart(3)} ${String(c.block_size).padStart(3)} ${dr} ${ff} ${val} ${fmtK(run.speed.gen_tok_s).padStart(4)}`, col)
     ty += 10
   })
 

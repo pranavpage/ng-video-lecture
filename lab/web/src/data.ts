@@ -4,6 +4,8 @@ export interface Config {
   n_layer: number; n_head: number; n_embd: number; block_size: number
   /** training-time dropout; 0 everywhere except the dropout study */
   dropout?: number
+  /** false = feedforward ablated (ffn study only) */
+  ffn?: boolean
 }
 /** the four architecture dials */
 export type Param = 'n_layer' | 'n_head' | 'n_embd' | 'block_size'
@@ -55,6 +57,8 @@ export interface RunsFile {
     grid: Record<Param, number[]>
     /** the corner of the grid that was also trained with dropout */
     dropout_study?: { dropout: number[]; where: Partial<Record<Param, number>> }
+    /** the slice of the grid that was also trained without the feedforward sublayer */
+    ffn_study?: { where: Partial<Record<Param, number[]>> }
     recipe: {
       batch_size: number; max_iters: number; eval_interval: number; eval_iters: number
       learning_rate: number; dropout: number; seed: number
@@ -73,12 +77,21 @@ export const PARAMS: Param[] = ['n_layer', 'n_head', 'n_embd', 'block_size']
 export function runId(c: Config): string {
   const d = c.dropout ?? 0
   return `L${c.n_layer}_H${c.n_head}_E${c.n_embd}_T${c.block_size}` + (d ? `_D${String(Math.round(d * 100)).padStart(2, '0')}` : '')
+    + (c.ffn === false ? '_NOFFN' : '')
+}
+
+/** whether a feedforward-ablated run exists for this architecture */
+export function ffnOptions(c: Config, meta: RunsFile['meta'] | undefined): boolean[] {
+  const st = meta?.ffn_study
+  if (!st || (c.dropout ?? 0) !== 0) return [true]
+  const inStudy = (Object.entries(st.where) as [Param, number[]][]).every(([k, v]) => v.includes(c[k]))
+  return inStudy ? [true, false] : [true]
 }
 
 /** dropout rates recorded for this architecture (always includes 0) */
 export function dropoutOptions(c: Config, meta: RunsFile['meta'] | undefined): number[] {
   const st = meta?.dropout_study
-  if (!st) return [0]
+  if (!st || c.ffn === false) return [0]
   const inStudy = (Object.entries(st.where) as [Param, number][]).every(([k, v]) => c[k] === v)
   return inStudy ? [0, ...st.dropout] : [0]
 }
@@ -109,9 +122,9 @@ export function paramCounts(c: Config) {
   const C = c.n_embd, T = c.block_size
   const head = 3 * C * (C / c.n_head)
   const proj = C * C + C
-  const ffn = 8 * C * C + 5 * C
+  const ffn = c.ffn === false ? 0 : 8 * C * C + 5 * C
   const ln = 2 * C
-  const block = c.n_head * head + proj + ffn + 2 * ln
+  const block = c.n_head * head + proj + ffn + (c.ffn === false ? 1 : 2) * ln
   return {
     tok: VOCAB * C,
     pos: T * C,
